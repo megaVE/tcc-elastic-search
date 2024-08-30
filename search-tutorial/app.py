@@ -17,6 +17,36 @@ data_file_path = "data.json"
 
 max_results_per_page = 5
 
+def extract_filters(query):
+    filters = []
+    
+    filter_regex = r'category:([^\s]+)\s*'
+    m = re.search(filter_regex, query)
+    if m:
+        filters.append({
+            'term': {
+                'category.keyword': {
+                    'value': m.group(1)
+                }
+            }
+        })
+        query = re.sub(filter_regex, '', query).strip()        
+    
+    filter_regex = r'year:([^\s]+)\s*'
+    m = re.search(filter_regex, query)
+    if m:
+        filters.append({
+            'range': {
+                'updated_at': {
+                    'gte': f'{m.group(1)}||/y',
+                    'lte': f'{m.group(1)}||/y'
+                }
+            }
+        })
+        query = re.sub(filter_regex, '', query).strip()
+    
+    return {'filter': filters}, query
+
 @app.get('/')
 def index():
     """Renders the Home Page"""
@@ -27,31 +57,96 @@ def index():
 def handle_search():
     """Handles the search from the Home Page"""
     query = request.form.get('query', '')
+    filters, parsed_query = extract_filters(query=query)
     from_ = request.form.get('from_', type=int, default=0)
+    
+    if parsed_query:
+        search_query = {
+            'must': [{
+                'multi_match': {
+                    'query': parsed_query,
+                    'fields': ['name', 'summary', 'content'],
+                }
+            }]
+        }
+    else:
+        search_query = {
+            'must': {
+                'match_all': {}
+            }
+        }
+    
     results = es.search(
         index=index_name,
         query={
-            #  SINGLE FIELD MATCHING QUERY
+            'bool': {
+                **search_query,
+                **filters
+            }
+            
+            # 1-SINGLE FIELD MATCHING QUERY
             # 'match': {
             #     'name': {
             #         'query': query
             #     }
             # }
             
-            'multi_match': {
-                'query': query,
-                'fields': searchable_fields
+            # 2-MULTI FIELD MATCHING QUERY
+            # 'multi_match': {
+            #     'query': query,
+            #     'fields': searchable_fields
+            # }
+
+            # 3-BOOLEAN QUERY            
+            # 'bool': {
+            #     'must': [{
+            #         'multi_match': {
+            #             'query': parsed_query,
+            #             'fields': ['name', 'summary', 'content'],
+            #         }
+            #     }],
+            #     **filters
+            #     # 'filter': [{
+            #     #     'term': {
+            #     #         'category.keyword': {
+            #     #             'value': "category to filter"
+            #     #         }
+            #     #     }
+            #     # }]
+            # } 
+        },
+        aggs={
+            'category-agg': {
+                'terms': {
+                    'field': 'category.keyword',
+                }
             },
+            'year-agg': {
+                'date_histogram': {
+                    'field': 'updated_at',
+                    'calendar_interval': 'year',
+                    'format': 'yyyy'
+                }
+            }
         },
         size=max_results_per_page,
         from_=from_
     )
+    
+    aggs = {
+        'Category': {
+            bucket['key']: bucket['doc_count']
+            for bucket in results['aggregations']['category-agg']['buckets']
+        }
+    }
+    
     return render_template(
         'index.html',
         query=query, # the query text entered by the user in the form
         results=results['hits']['hits'], # a list of search results
         from_=from_, #the zero-based index of the first result
-        total=results['hits']['total']['value'] # the total number of results
+        total=results['hits']['total']['value'], # the total number of results
+        aggs=aggs
     )
 
 
