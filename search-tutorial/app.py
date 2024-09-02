@@ -137,6 +137,11 @@ def handle_search():
         'Category': {
             bucket['key']: bucket['doc_count']
             for bucket in results['aggregations']['category-agg']['buckets']
+        },
+        'Year': {
+            bucket['key_as_string']: bucket['doc_count']
+            for bucket in results['aggregations']['year-agg']['buckets']
+            if bucket['doc_count'] > 0
         }
     }
     
